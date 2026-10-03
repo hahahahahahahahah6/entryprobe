@@ -12,6 +12,7 @@ from entryprobe.checker import (
     ENTRY_MISSING_MODULE,
     ENTRY_OK,
     NO_ENTRY_POINTS,
+    UNKNOWN_IMPORT,
     check_entry_points,
     direct_import_roots,
     has_problems,
@@ -64,13 +65,35 @@ def test_entry_missing_when_target_absent():
     assert has_problems([c])
 
 
-def test_first_party_import_missing_is_flagged():
+def test_first_party_import_missing_is_unknown_not_hard_missing():
     files = ["app.py"]
     src = "import sys\nfrom helper import thing\n"
     (c,) = check_entry_points({"run": "app:main"}, files,
                               read_source=lambda m: src)
-    assert c.verdict == ENTRY_MISSING_MODULE
+    assert c.verdict == UNKNOWN_IMPORT
     assert "helper" in c.detail
+    assert "review needed" in c.detail
+    assert has_problems([c])
+
+
+def test_dist_name_alias_avoids_false_positive():
+    # Pillow -> PIL: declared dependency with a divergent import name.
+    files = ["app.py"]
+    src = "from PIL import Image\n"
+    (c,) = check_entry_points({"run": "app:main"}, files,
+                              read_source=lambda m: src,
+                              requires_dist=["Pillow>=9"])
+    assert c.verdict == ENTRY_OK
+
+
+def test_undeclared_divergent_import_is_unknown():
+    # bs4 imported but beautifulsoup4 NOT declared -> needs review.
+    files = ["app.py"]
+    src = "from bs4 import BeautifulSoup\n"
+    (c,) = check_entry_points({"run": "app:main"}, files,
+                              read_source=lambda m: src)
+    assert c.verdict == UNKNOWN_IMPORT
+    assert has_problems([c])
 
 
 def test_declared_dependency_import_is_ok():
@@ -148,7 +171,7 @@ def test_llama_fixture_replay():
     )
     by_name = {c.name: c for c in results}
     conv = by_name["llama-convert-hf-to-gguf"]
-    assert conv.verdict == ENTRY_MISSING_MODULE
+    assert conv.verdict == UNKNOWN_IMPORT
     assert "conversion" in conv.detail
     assert "huggingface_hub" not in conv.detail
     assert has_problems(results)
