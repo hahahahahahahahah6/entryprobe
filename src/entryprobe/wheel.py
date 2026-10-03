@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import configparser
+import re
 import zipfile
 
 
@@ -30,8 +31,12 @@ def wheel_files(path: str) -> list[str]:
 
 
 def dist_name(req: str) -> str:
-    """'requests (>=2.0); python_version>"3.8"' -> 'requests'; 'gguf @ file:///x' -> 'gguf'."""
-    return req.split(";")[0].strip().split()[0].rstrip(",")
+    """'requests (>=2.0); python_version>"3.8"' -> 'requests'; 'gguf @ file:///x' -> 'gguf';
+    'Pillow>=9' -> 'Pillow'."""
+    head = req.split(";")[0].strip()
+    # strip URL spec and version constraints: take the leading name token
+    m = re.match(r"([A-Za-z0-9_.\-]+)", head)
+    return m.group(1) if m else head.split()[0]
 
 
 def read_wheel_metadata(path: str) -> dict:
