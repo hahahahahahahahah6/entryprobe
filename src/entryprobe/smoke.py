@@ -7,11 +7,15 @@ downloads or executes arbitrary public packages.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+
+from .checker import _DIST_TO_IMPORT, _normalize
+from .wheel import dist_name
 
 # Verdicts
 SMOKE_OK = "SMOKE_OK"  # entry point exited 0
@@ -39,11 +43,36 @@ def _tail(text: str, lines: int = 15) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
 
+_MISSING_MOD = re.compile(r"ModuleNotFoundError: No module named '([A-Za-z0-9_.]+)'")
+
+
+def _missing_is_declared_dep(output: str, requires_dist: list[str] | None) -> str | None:
+    """If the failure is a missing *declared* dependency, say so.
+
+    smoke installs with --no-deps, so a healthy CLI can fail here purely from
+    the test environment. Distinguishing that from a genuinely broken release
+    keeps SMOKE_FAILED honest.
+    """
+    if not requires_dist:
+        return None
+    declared = {_normalize(dist_name(r)) for r in requires_dist}
+    for d in list(declared):
+        alias = _DIST_TO_IMPORT.get(d)
+        if alias:
+            declared.add(alias)
+    for m in _MISSING_MOD.finditer(output):
+        root = _normalize(m.group(1).split(".")[0])
+        if root in declared:
+            return m.group(1)
+    return None
+
+
 def run_smoke(
     wheel_path: str,
     entry: str,
     args: list[str],
     timeout: int = 120,
+    requires_dist: list[str] | None = None,
 ) -> SmokeResult:
     """Install wheel into a fresh temp venv (--no-deps) and run the entry point."""
     if not os.path.isfile(wheel_path):
@@ -85,10 +114,18 @@ def run_smoke(
         if proc.returncode == 0:
             return SmokeResult(entry=entry, args=args, verdict=SMOKE_OK,
                                returncode=0, output_tail=out)
+        detail = f"entry point exited with code {proc.returncode}"
+        missing_dep = _missing_is_declared_dep(out, requires_dist)
+        if missing_dep is not None:
+            detail += (
+                f"; missing module {missing_dep!r} matches a declared dependency "
+                f"-- likely an artifact of the --no-deps test environment, "
+                f"not necessarily a broken release"
+            )
         return SmokeResult(
             entry=entry, args=args, verdict=SMOKE_FAILED,
             returncode=proc.returncode, output_tail=out,
-            detail=f"entry point exited with code {proc.returncode}",
+            detail=detail,
         )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
