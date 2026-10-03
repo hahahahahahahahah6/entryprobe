@@ -46,18 +46,20 @@ the release?), [wheelreach](https://github.com/hahahahahahahahah6/wheelreach)
 ## Quickstart
 
 ```bash
-pip install entryprobe
+pip install entryprobe  # PyPI upload pending; install from source meanwhile
 entryprobe check --wheel dist/mypackage-1.0-py3-none-any.whl
 ```
 
 ```
 entry point              target                  verdict
 -----------------------  ----------------------  --------------------
-llama-convert-hf-to-gguf convert_hf_to_gguf:main ENTRY_MISSING_MODULE
+llama-convert-hf-to-gguf convert_hf_to_gguf:main UNKNOWN_IMPORT
 
 checked 1 entry point(s), 1 problem(s)
   llama-convert-hf-to-gguf: entry point 'llama-convert-hf-to-gguf' (convert_hf_to_gguf)
-  imports 'conversion' which is not in the distribution and not a declared dependency
+  imports 'conversion': not in the distribution and not matching any declared
+  dependency -- either a missing first-party module or a third-party import
+  whose distribution name differs from its import name; review needed
 ```
 
 Or check an installed distribution:
@@ -74,12 +76,16 @@ For each `console_scripts` entry point:
 
 1. The target module file exists in the distribution (`ENTRY_OK` vs
    `ENTRY_MISSING_MODULE`).
-2. The target's **module-level imports that run at import time** resolve:
-   stdlib is skipped, `Requires-Dist` dependencies are expected, and anything
-   else missing from the distribution is flagged — that's the llama.cpp
-   failure mode. Function-level (lazy) imports, `try/except ImportError`
-   fallbacks, `if TYPE_CHECKING:` blocks, and `if __name__ == "__main__":`
-   blocks don't decide whether an entry point *starts*, so they're ignored.
+2. The target's **module-level imports that run at import time** are accounted
+   for: stdlib is skipped, `Requires-Dist` dependencies are expected (plus a
+   small documented alias table for famous dist-name/import-name divergences
+   like Pillow → PIL). Anything else absent from the distribution is
+   `UNKNOWN_IMPORT` — the tool cannot tell a missing first-party module from
+   a third-party import with a divergent name, so it reports "needs review"
+   instead of guessing. Function-level (lazy) imports, `try/except
+   ImportError` fallbacks, `if TYPE_CHECKING:` blocks, and `if __name__ ==
+   "__main__":` blocks don't decide whether an entry point *starts*, so
+   they're ignored.
 
 ## Opt-in smoke test
 
@@ -102,12 +108,21 @@ It installs with `--no-deps` into a throwaway venv (deleted afterwards) and
 runs only the command you typed. Verdicts: `SMOKE_OK`, `SMOKE_FAILED`
 (nonzero exit; traceback tail captured), `SMOKE_TIMEOUT`.
 
+Two honest caveats. First, a venv is **not a security sandbox**: smoke runs
+real code from the wheel you named, with access to your files and network.
+Only smoke-test wheels you trust, and read the caveat as "isolated
+environment", not "safe room". Second, `--no-deps` means a perfectly healthy
+CLI can fail smoke from missing declared dependencies — a `SMOKE_FAILED`
+caused by `ModuleNotFoundError` for a *declared* dependency says more about
+the test environment than the release; the report distinguishes this case.
+
 ## Verdicts
 
 | Verdict | Meaning | Problem? |
 |---|---|---|
-| `ENTRY_OK` | target module present; import-time imports resolve | no |
-| `ENTRY_MISSING_MODULE` | target module — or a first-party import it needs at import time — is absent | yes |
+| `ENTRY_OK` | target module present; no missing imports found within static scope (not a proof the module imports successfully) | no |
+| `ENTRY_MISSING_MODULE` | the entry target module itself is absent from the distribution | yes |
+| `UNKNOWN_IMPORT` | an import-time dependency is unverifiable: absent and undeclared — missing first-party module or divergent third-party name; review needed | yes |
 | `NO_ENTRY_POINTS` | no `console_scripts` declared | no (informational) |
 | `SMOKE_OK` / `SMOKE_FAILED` / `SMOKE_TIMEOUT` | smoke test outcome | failed/timeout: yes |
 
