@@ -181,7 +181,12 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     if cmd_args and cmd_args[0] == "--":
         cmd_args = cmd_args[1:]
     try:
-        result = run_smoke(args.wheel, entry, cmd_args, timeout=args.timeout)
+        meta = read_wheel_metadata(args.wheel)
+        result = run_smoke(args.wheel, entry, cmd_args, timeout=args.timeout,
+                           requires_dist=meta.get("requires_dist"))
+    except zipfile.BadZipFile:
+        print(f"entryprobe: error: not a valid wheel: {args.wheel}", file=sys.stderr)
+        return 2
     except SmokeError as exc:
         print(f"entryprobe: error: {exc}", file=sys.stderr)
         return 2
