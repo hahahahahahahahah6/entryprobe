@@ -10,6 +10,7 @@ from entryprobe.smoke import (
     SMOKE_OK,
     SMOKE_TIMEOUT,
     SmokeError,
+    _missing_is_declared_dep,
     run_smoke,
     smoke_has_problems,
 )
@@ -94,6 +95,18 @@ def test_smoke_script_not_created(monkeypatch):
     r = run_smoke("f.whl", "mycli", [])
     assert r.verdict == SMOKE_FAILED
     assert "not created" in r.detail
+
+
+def test_missing_declared_dep_is_distinguished():
+    out = "ModuleNotFoundError: No module named 'torch'"
+    assert _missing_is_declared_dep(out, ["torch>=2.0", "numpy"]) == "torch"
+    # alias table: Pillow -> PIL
+    out2 = "ModuleNotFoundError: No module named 'PIL'"
+    assert _missing_is_declared_dep(out2, ["Pillow"]) == "PIL"
+    # not declared -> None
+    assert _missing_is_declared_dep(out, ["numpy"]) is None
+    assert _missing_is_declared_dep(out, None) is None
+    assert _missing_is_declared_dep("all good", ["torch"]) is None
 
 
 def test_smoke_missing_wheel_file_real():
