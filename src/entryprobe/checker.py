@@ -1,9 +1,15 @@
 """Static check: do declared console_scripts entry points resolve inside the dist?
 
 Beyond the entry target module itself, this also parses the target's direct
-imports (one level, via ast) and flags first-party modules that are missing
-from the distribution. Third-party imports are recognized through
-Requires-Dist (and top_level.txt when present); stdlib is always skipped.
+imports (one level, via ast). Imports that are absent from the distribution and
+don't match any declared dependency are UNKNOWN_IMPORT -- the tool cannot tell
+a missing first-party module from a third-party import whose dist name differs
+from its import name (beyond a small alias table), so it reports "needs review"
+instead of guessing. Third-party imports are recognized through Requires-Dist
+(and top_level.txt when present); stdlib is always skipped.
+
+ENTRY_OK means "no missing imports found within static analysis scope" -- not
+a proof the module imports successfully.
 """
 from __future__ import annotations
 
@@ -14,11 +20,29 @@ from dataclasses import dataclass, field
 from .wheel import dist_name, module_file_candidates, module_present, target_module
 
 # Verdicts
-ENTRY_OK = "ENTRY_OK"  # target module present and its direct imports resolve
-ENTRY_MISSING_MODULE = "ENTRY_MISSING_MODULE"  # target or a first-party import is absent
+ENTRY_OK = "ENTRY_OK"  # target module present; no missing imports found in static scope
+ENTRY_MISSING_MODULE = "ENTRY_MISSING_MODULE"  # the entry target module itself is absent
+UNKNOWN_IMPORT = "UNKNOWN_IMPORT"  # an import-time dependency is unverifiable:
+# absent from the dist and not matching any declared dependency -- either a
+# missing first-party module or a third-party import whose dist name differs
+# from its import name. Needs human review; never a silent pass.
 NO_ENTRY_POINTS = "NO_ENTRY_POINTS"  # nothing declared; informational
 
-PROBLEM_VERDICTS = {ENTRY_MISSING_MODULE}
+PROBLEM_VERDICTS = {ENTRY_MISSING_MODULE, UNKNOWN_IMPORT}
+
+# Famous distribution-name -> import-name divergences (documented heuristic).
+# If an import root matches a *declared* dependency through this table, it is
+# treated as declared. Anything else unverifiable -> UNKNOWN_IMPORT.
+_DIST_TO_IMPORT = {
+    "pillow": "pil",
+    "beautifulsoup4": "bs4",
+    "pyyaml": "yaml",
+    "scikit-learn": "sklearn",
+    "scikit-image": "skimage",
+    "python-dateutil": "dateutil",
+    "pyjwt": "jwt",
+    "attrs": "attr",
+}
 
 _STDLIB = set(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
 
@@ -148,6 +172,11 @@ def check_entry_points(
                            source=source)]
     declared = {_normalize(dist_name(r)) for r in (requires_dist or [])}
     declared |= {_normalize(t) for t in (top_level or [])}
+    # dist-name -> import-name aliases for declared deps (Pillow -> PIL, ...).
+    for d in list(declared):
+        alias = _DIST_TO_IMPORT.get(d)
+        if alias:
+            declared.add(alias)
     results: list[EntryCheck] = []
     for name, target in entry_points.items():
         module = target_module(target)
@@ -161,7 +190,10 @@ def check_entry_points(
             results.append(check)
             continue
         # One-level import analysis on the entry target module.
-        missing: list[str] = []
+        # Absent + undeclared imports are UNKNOWN_IMPORT, not a hard "missing":
+        # the tool cannot tell a missing first-party module from a third-party
+        # import whose dist name differs (beyond the alias table above).
+        unknown: list[str] = []
         if read_source is not None:
             src = read_source(module)
             if src is not None:
@@ -169,13 +201,16 @@ def check_entry_points(
                     if root in _STDLIB or _normalize(root) in declared:
                         continue
                     if not module_present(files, root):
-                        missing.append(root)
-        if missing:
-            check.verdict = ENTRY_MISSING_MODULE
+                        unknown.append(root)
+        if unknown:
+            check.verdict = UNKNOWN_IMPORT
             check.detail = (
                 f"entry point {name!r} ({module}) imports "
-                + ", ".join(repr(m) for m in missing)
-                + " which is not in the distribution and not a declared dependency"
+                + ", ".join(repr(m) for m in unknown)
+                + ": not in the distribution and not matching any declared "
+                + "dependency -- either a missing first-party module or a "
+                + "third-party import whose distribution name differs from its "
+                + "import name (e.g. Pillow -> PIL); review needed"
             )
         results.append(check)
     return results
